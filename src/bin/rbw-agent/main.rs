@@ -2,6 +2,7 @@ use anyhow::Context as _;
 
 mod actions;
 mod agent;
+mod bitwarden_desktop;
 mod daemon;
 mod debugger;
 mod notifications;
