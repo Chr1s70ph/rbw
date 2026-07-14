@@ -406,6 +406,7 @@ async fn unlock_state(
 
         if rbw::config::Config::load_async().await?.biometric_unlock {
             match biometric_unlock(
+                state.clone(),
                 db.access_token.as_deref(),
                 &protected_private_key,
                 &db.protected_org_keys,
@@ -417,7 +418,7 @@ async fn unlock_state(
                     return Ok(());
                 }
                 Err(e) => {
-                    log::debug!(
+                    log::warn!(
                         "biometric unlock failed, falling back to \
                          pinentry: {e:#}"
                     );
@@ -503,6 +504,7 @@ async fn unlock_success(
 }
 
 async fn biometric_unlock(
+    state: std::sync::Arc<tokio::sync::Mutex<crate::state::State>>,
     access_token: Option<&str>,
     protected_private_key: &str,
     protected_org_keys: &std::collections::HashMap<String, String>,
@@ -511,13 +513,28 @@ async fn biometric_unlock(
     std::collections::HashMap<String, rbw::locked::Keys>,
 )> {
     let access_token = access_token.context("not logged in")?;
-    let key =
-        crate::bitwarden_desktop::unlock_user_key(access_token).await?;
+    // reuse the already established channel if there is one; don't hold the
+    // state lock while waiting for the user to answer the biometric prompt
+    let cached = state.lock().await.bitwarden_desktop_channel.take();
+    let (res, channel) =
+        crate::bitwarden_desktop::unlock_user_key(cached, access_token)
+            .await;
+    state.lock().await.bitwarden_desktop_channel = channel;
+    let key = res?;
     Ok(rbw::actions::unlock_with_user_key(
         key,
         protected_private_key,
         protected_org_keys,
     )?)
+}
+
+// used at agent startup to pre-establish the desktop app channel, so the
+// first biometric unlock doesn't have to wait for it
+pub async fn connect_bitwarden_desktop(
+) -> anyhow::Result<crate::bitwarden_desktop::DesktopChannel> {
+    let db = load_db().await?;
+    let access_token = db.access_token.context("not logged in")?;
+    crate::bitwarden_desktop::connect_channel(&access_token).await
 }
 
 pub async fn lock(
